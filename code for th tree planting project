@@ -1,0 +1,110 @@
+import math
+import folium
+import pandas as pd
+from shapely.geometry import Point
+import osmnx as ox
+import customtkinter as ctk
+import tkinter.messagebox as messagebox
+
+METERS_PER_DEG_LAT = 111320
+
+def meters_to_deg_lon(lat):
+    return 40075000 * math.cos(math.radians(lat)) / 360
+
+def fetch_features(coord, radius):
+    try:
+        tags = {"natural": True, "landuse": True}
+        return ox.features_from_point(coord, tags=tags, dist=radius)
+    except:
+        return pd.DataFrame()
+
+def extract_water(features):
+    water = []
+    if features.empty:
+        return water
+    if "natural" in features.columns:
+        water += features[features["natural"].isin(["water", "wetland"])].geometry.tolist()
+    if "landuse" in features.columns:
+        water += features[features["landuse"].isin(["reservoir"])].geometry.tolist()
+    return water
+
+def run_agroforestry_map(coord, radius, spacing, min_dist_to_crops):
+    features = fetch_features(coord, radius)
+    water = extract_water(features)
+
+    m = folium.Map(location=coord, zoom_start=16)
+    meters_per_deg_lon = meters_to_deg_lon(coord[0])
+    steps = int((2 * radius) / spacing)
+
+    suitable, unsuitable = [], []
+
+    for i in range(-steps // 2, steps // 2):
+        for j in range(-steps // 2, steps // 2):
+            dx, dy = i * spacing, j * spacing
+            if math.hypot(dx, dy) > radius:
+                continue
+
+            lat = coord[0] + dy / METERS_PER_DEG_LAT
+            lon = coord[1] + dx / meters_per_deg_lon
+            point = Point(lon, lat)
+
+            near_water = any(g.buffer(2 / METERS_PER_DEG_LAT).contains(point) for g in water)
+
+            # Check min distance to crops by ensuring spacing is not too small
+            if spacing < min_dist_to_crops:
+                unsuitable.append({"Lat": lat, "Lon": lon, "Reason": f"Spacing < min crop distance {min_dist_to_crops}m"})
+                continue
+
+            if near_water:
+                unsuitable.append({"Lat": lat, "Lon": lon, "Reason": "Near water"})
+            else:
+                suitable.append({"Lat": lat, "Lon": lon, "Reason": "Good for agroforestry"})
+                folium.CircleMarker(location=(lat, lon), radius=3, color="green", fill=True).add_to(m)
+
+    pd.DataFrame(suitable).to_excel("agroforestry_trees.xlsx", index=False)
+    pd.DataFrame(unsuitable).to_excel("unsuitable_spots.xlsx", index=False)
+    m.save("agroforestry_map.html")
+
+    return len(suitable)
+
+def start_analysis():
+    try:
+        lat, lon = map(float, entry_coord.get().split(","))
+        radius = float(entry_radius.get())
+        spacing = int(entry_spacing.get())
+        min_dist = int(entry_min_crop_dist.get())
+        count = run_agroforestry_map((lat, lon), radius, spacing, min_dist)
+        messagebox.showinfo("Done", f"Map created.\nSuitable spots: {count}\nFiles saved.")
+    except Exception as e:
+        messagebox.showerror("Error", f"{e}")
+
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("green")
+
+app = ctk.CTk()
+app.title("Agroforestry Planner")
+app.geometry("450x350")
+
+ctk.CTkLabel(app, text="Coordinates (lat, lon):").pack(pady=5)
+entry_coord = ctk.CTkEntry(app)
+entry_coord.pack(pady=5)
+entry_coord.insert(0, "0.3476,32.5825")
+
+ctk.CTkLabel(app, text="Plot radius (meters):").pack(pady=5)
+entry_radius = ctk.CTkEntry(app)
+entry_radius.pack(pady=5)
+entry_radius.insert(0, "100")
+
+ctk.CTkLabel(app, text="Tree spacing (meters):").pack(pady=5)
+entry_spacing = ctk.CTkEntry(app)
+entry_spacing.pack(pady=5)
+entry_spacing.insert(0, "10")
+
+ctk.CTkLabel(app, text="Min distance to crops (meters):").pack(pady=5)
+entry_min_crop_dist = ctk.CTkEntry(app)
+entry_min_crop_dist.pack(pady=5)
+entry_min_crop_dist.insert(0, "8")
+
+ctk.CTkButton(app, text="Generate Agroforestry Map", command=start_analysis).pack(pady=20)
+
+app.mainloop()
